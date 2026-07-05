@@ -13,7 +13,6 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 from Foundation import (
     NSBackgroundActivityScheduler,
     NSBackgroundActivityResultFinished,
-    NSOperationQueue,
 )
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -220,8 +219,7 @@ class DailyWebLoginApp(rumps.App):
         """用 NSBackgroundActivityScheduler 周期性驱动 schedule.run_pending()。
 
         与 NSTimer 不同，它不会让 NSRunLoop 始终繁忙，遵守系统睡眠、可与其它系统
-        活动合并唤醒，因此不阻止 App Nap / 系统睡眠。block 默认在后台队列执行，
-        故把 run_pending 派发到主线程（浏览器/通知需在主线程）。
+        活动合并唤醒，因此不阻止 App Nap / 系统睡眠。
         """
         if self._bg_scheduler is not None:
             return  # 防止重复 arm
@@ -234,18 +232,20 @@ class DailyWebLoginApp(rumps.App):
         sched.setTolerance_(15 * 60)   # 15 分钟容差，允许 OS 合并唤醒
 
         def handler(completionHandler):
-            def main_work():
+            # 直接在后台队列执行，不派发到主线程。
+            # webbrowser.open_new_tab 用 subprocess，线程安全；
+            # rumps.notification 用 NSUserNotificationCenter，也可跨线程调用。
+            # 之前用 NSOperationQueue.mainQueue().addOperationWithBlock_ 派发到主线程，
+            # 会导致 completionHandler 代理在 block 执行时抛出未捕获异常 → SIGABRT。
+            try:
+                schedule.run_pending()
+            except:
+                traceback.print_exc()
+            finally:
                 try:
-                    schedule.run_pending()
-                except Exception:
-                    traceback.print_exc()
-                finally:
-                    # 完成回调必须调用，否则调度器认为本轮未结束。
-                    # 放在 finally 保证异常路径也会释放。
                     completionHandler(NSBackgroundActivityResultFinished)
-
-            # 派发到主队列：webbrowser.open_new_tab 与 rumps.notification 需主线程
-            NSOperationQueue.mainQueue().addOperationWithBlock_(main_work)
+                except:
+                    pass
 
         sched.scheduleWithBlock_(handler)
         # 保持强引用：调度器本身 + Python 可调用对象（防 GC 导致 block 失效）
