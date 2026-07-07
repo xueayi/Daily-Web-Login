@@ -3,17 +3,12 @@
 
 import json
 import os
-import traceback
 import webbrowser
 from datetime import datetime
 
 import rumps
 import schedule
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
-from Foundation import (
-    NSBackgroundActivityScheduler,
-    NSBackgroundActivityResultFinished,
-)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
@@ -59,18 +54,12 @@ class DailyWebLoginApp(rumps.App):
         self._register_schedule()
         self._run_immediately()
 
-        # NSBackgroundActivityScheduler 引用占位（run() 时创建，防 GC）
-        self._bg_scheduler = None
-        self._bg_block = None
-
     def run(self, **options):
         # 以后台 accessory 方式运行（运行时等价 LSUIElement），对 python3 直跑
         # 和 start.sh 都生效。sharedApplication() 是单例，super().run() 复用同一实例。
         NSApplication.sharedApplication().setActivationPolicy_(
             NSApplicationActivationPolicyAccessory
         )
-        # 启动 App-Nap 友好的后台调度器（替代 @rumps.timer(30)）
-        self._start_background_scheduler()
         super().run(**options)
 
     # ── menu ─────────────────────────────────────────────────────────────
@@ -196,9 +185,6 @@ class DailyWebLoginApp(rumps.App):
             rumps.alert("错误", "请输入有效的数字编号")
 
     def _on_quit(self, _):
-        if self._bg_scheduler is not None:
-            self._bg_scheduler.invalidate()
-            self._bg_scheduler = None
         rumps.quit_application()
 
     # ── schedule ─────────────────────────────────────────────────────────
@@ -215,42 +201,15 @@ class DailyWebLoginApp(rumps.App):
             f"已打开 {len(self.urls)} 个网址 ({self.schedule_time})",
         )
 
-    def _start_background_scheduler(self):
-        """用 NSBackgroundActivityScheduler 周期性驱动 schedule.run_pending()。
+    @rumps.timer(300)
+    def _tick(self, _):
+        """每 5 分钟检查一次 schedule 库是否有到期任务。
 
-        与 NSTimer 不同，它不会让 NSRunLoop 始终繁忙，遵守系统睡眠、可与其它系统
-        活动合并唤醒，因此不阻止 App Nap / 系统睡眠。
+        相比 30s 间隔，唤醒频率降低 10 倍；schedule 库的 catch-up 机制
+        保证错过定时点后下次 tick 立即补触发。配合 accessory 策略，
+        App Nap 仍可在 tick 间隙生效。
         """
-        if self._bg_scheduler is not None:
-            return  # 防止重复 arm
-
-        sched = NSBackgroundActivityScheduler.alloc().initWithIdentifier_(
-            "com.dailyweblogin.tick"
-        )
-        sched.setRepeats_(True)
-        sched.setInterval_(30 * 60)    # 30 分钟
-        sched.setTolerance_(15 * 60)   # 15 分钟容差，允许 OS 合并唤醒
-
-        def handler(completionHandler):
-            # 直接在后台队列执行，不派发到主线程。
-            # webbrowser.open_new_tab 用 subprocess，线程安全；
-            # rumps.notification 用 NSUserNotificationCenter，也可跨线程调用。
-            # 之前用 NSOperationQueue.mainQueue().addOperationWithBlock_ 派发到主线程，
-            # 会导致 completionHandler 代理在 block 执行时抛出未捕获异常 → SIGABRT。
-            try:
-                schedule.run_pending()
-            except:
-                traceback.print_exc()
-            finally:
-                try:
-                    completionHandler(NSBackgroundActivityResultFinished)
-                except:
-                    pass
-
-        sched.scheduleWithBlock_(handler)
-        # 保持强引用：调度器本身 + Python 可调用对象（防 GC 导致 block 失效）
-        self._bg_scheduler = sched
-        self._bg_block = handler
+        schedule.run_pending()
 
     def _run_immediately(self):
         open_all_urls(self.urls)
