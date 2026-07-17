@@ -2,8 +2,9 @@
 """Daily Web Login - macOS 菜单栏应用，每日定时用默认浏览器打开配置的网址。"""
 
 import json
+import logging
 import os
-import webbrowser
+import subprocess
 from datetime import datetime
 
 import rumps
@@ -11,6 +12,14 @@ import schedule
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "daily_web_login.log")
+
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    encoding="utf-8",
+)
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -26,12 +35,46 @@ def save_config(cfg):
         f.write("\n")
 
 
+def _open_url(url):
+    """用系统默认浏览器打开 url，返回是否成功。
+
+    优先使用 /usr/bin/open（Launch Services，最可靠）；失败时回退到
+    AppleScript 的 `open location`。之前的 webbrowser.open_new_tab 在
+    本运行环境（系统 python3 + accessory 模式 + nohup 后台）下会静默
+    失败，因此改为直接调用系统命令。
+    """
+    try:
+        r = subprocess.run(["/usr/bin/open", url], capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            logging.info("打开成功: %s", url)
+            return True
+        logging.warning("open 失败 rc=%s: %s", r.returncode, r.stderr.strip())
+    except Exception:
+        logging.exception("open 异常 %s", url)
+
+    # 回退：AppleScript
+    try:
+        script = f'open location "{url}"'
+        r = subprocess.run(["/usr/bin/osascript", "-e", script], capture_output=True, text=True, timeout=15)
+        if r.returncode == 0:
+            logging.info("AppleScript 打开成功: %s", url)
+            return True
+        logging.warning("AppleScript 失败: %s", r.stderr.strip())
+    except Exception:
+        logging.exception("AppleScript 异常 %s", url)
+
+    return False
+
+
 def open_all_urls(urls=None):
-    """用默认浏览器逐个打开所有网址。"""
+    """用默认浏览器逐个打开所有网址，返回成功打开的数量。"""
     if urls is None:
         urls = load_config().get("urls", [])
+    ok = 0
     for url in urls:
-        webbrowser.open_new_tab(url)
+        ok += 1 if _open_url(url) else 0
+    logging.info("本次共打开 %d/%d 个网址", ok, len(urls))
+    return ok
 
 
 # ── app ──────────────────────────────────────────────────────────────────────
@@ -43,6 +86,7 @@ class DailyWebLoginApp(rumps.App):
         cfg = load_config()
         self.schedule_time = cfg.get("schedule_time", "09:00")
         self.urls = cfg.get("urls", [])
+        logging.info("DailyWebLogin 启动, 定时=%s, 网址数=%d", self.schedule_time, len(self.urls))
 
         super().__init__(
             name="DailyWebLogin",
@@ -68,6 +112,7 @@ class DailyWebLoginApp(rumps.App):
         items = []
 
         items.append(rumps.MenuItem("立即打开全部网址", callback=self._on_open_all))
+        items.append(rumps.MenuItem("测试打开（首个网址）", callback=self._on_test_open))
         items.append(rumps.separator)
 
         time_item = rumps.MenuItem(f"⏰ 定时: {self.schedule_time}")
@@ -107,7 +152,23 @@ class DailyWebLoginApp(rumps.App):
         )
 
     def _on_open_single(self, sender):
-        webbrowser.open_new_tab(sender.title)
+        ok = _open_url(sender.title)
+        rumps.notification(
+            "Daily Web Login",
+            "打开" + ("成功" if ok else "失败"),
+            sender.title,
+        )
+
+    def _on_test_open(self, _):
+        if not self.urls:
+            rumps.alert("提示", "网址列表为空")
+            return
+        ok = _open_url(self.urls[0])
+        rumps.notification(
+            "Daily Web Login",
+            "测试打开" + ("成功" if ok else "失败"),
+            f"{self.urls[0]}\n日志: {LOG_FILE}",
+        )
 
     def _on_change_time(self, _):
         resp = rumps.Window(

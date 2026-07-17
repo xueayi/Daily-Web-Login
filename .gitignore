@@ -1,0 +1,5 @@
+# 运行时日志
+daily_web_login.log
+
+# 项目记忆（由 WorkBuddy 管理，不入库）
+.workbuddy/
