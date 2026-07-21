@@ -2,7 +2,16 @@
   "schedule_time": "09:00",
   "urls": [
     "https://kp.m-team.cc/",
-    "https://linux.do/",
-    "https://www.fufugal.com/"
-  ]
+    "https://linux.do/"
+  ],
+  "yngal": {
+    "enabled": true,
+    "hunt_enabled": true
+  },
+  "feishu": {
+    "notify_enabled": true
+  },
+  "kf": {
+    "enabled": true
+  }
 }

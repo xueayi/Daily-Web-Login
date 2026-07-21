@@ -3,3 +3,6 @@ daily_web_login.log
 
 # 项目记忆（由 WorkBuddy 管理，不入库）
 .workbuddy/
+
+# 凭证文件（含敏感信息：yngal 账号密码、飞书 webhook URL，不入库）
+.env
